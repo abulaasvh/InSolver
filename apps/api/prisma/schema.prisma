@@ -1,0 +1,203 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Institution {
+  id                  String   @id @default(uuid())
+  aicte_permanent_id  String   @unique
+  canonical_name      String
+  aliases             String[]
+  region              String
+  address             String?
+  verification_status String   @default("verified") // verified | pending | flagged
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+
+  cases Case[]
+
+  @@index([region])
+  @@index([verification_status])
+  @@map("institutions")
+}
+
+model Bureau {
+  id     String  @id @default(uuid())
+  name   String  @unique // Approval Bureau, Policy Bureau, Anti-Ragging Cell, Women Cell, PGRC
+  type   String  @default("Bureau")
+  active Boolean @default(true)
+
+  cases         Case[]
+  routing_rules RoutingRule[]
+
+  @@map("bureaus")
+}
+
+model User {
+  id            String   @id @default(uuid())
+  name          String
+  email         String   @unique
+  password_hash String
+  role          String   // management | supervisor | officer | regional | admin | auditor
+  bureau_scope  String?  // name of Bureau/Cell or null
+  region_scope  String?  // North, South, etc. or null
+  active        Boolean  @default(true)
+  created_at    DateTime @default(now())
+  updated_at    DateTime @updatedAt
+
+  assigned_cases         Case[]             @relation("OfficerCases")
+  case_events            CaseEvent[]
+  reviewed_relationships CaseRelationship[] @relation("Reviewer")
+  alerts                 Alert[]
+  audit_events           AuditEvent[]
+
+  @@map("users")
+}
+
+model Case {
+  id                String    @id @default(uuid())
+  case_code         String    @unique // e.g. CASE-0136
+  source_system     String    @default("MANUAL")
+  source_case_id    String
+  institution_id    String
+  subject           String
+  category          String
+  status            String    @default("New") // New | Under Process | Transferred | Disposed | Overdue
+  bureau_id         String?
+  officer_id        String?
+  received_at       DateTime  @default(now())
+  last_action       String?
+  last_action_at    DateTime?
+  next_action       String?
+  due_at            DateTime?
+  synced_at         DateTime  @default(now())
+  coordination_note String?
+  lead_team         String?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  institution Institution @relation(fields: [institution_id], references: [id])
+  bureau      Bureau?     @relation(fields: [bureau_id], references: [id])
+  officer     User?       @relation("OfficerCases", fields: [officer_id], references: [id])
+
+  events             CaseEvent[]
+  alerts             Alert[]
+  relationships_as_a CaseRelationship[] @relation("CaseA")
+  relationships_as_b CaseRelationship[] @relation("CaseB")
+
+  @@unique([source_system, source_case_id])
+  @@index([institution_id])
+  @@index([status])
+  @@index([bureau_id])
+  @@index([received_at])
+  @@index([due_at])
+  @@map("cases")
+}
+
+model RoutingRule {
+  id        String   @id @default(uuid())
+  keywords  String[]
+  category  String
+  bureau_id String
+  priority  Int      @default(1)
+  active    Boolean  @default(true)
+  created_at DateTime @default(now())
+
+  bureau Bureau @relation(fields: [bureau_id], references: [id])
+
+  @@map("routing_rules")
+}
+
+model CaseRelationship {
+  id                String    @id @default(uuid())
+  case_a_id         String
+  case_b_id         String
+  relationship_type String    @default("overlap")
+  confidence_band   String    // Low | Medium | High
+  score             Float
+  reasons           Json
+  review_status     String    @default("suggested") // suggested | confirmed | rejected | deferred
+  reviewed_by       String?
+  reviewed_at       DateTime?
+  reason            String?
+  created_at        DateTime  @default(now())
+  updated_at        DateTime  @updatedAt
+
+  case_a   Case  @relation("CaseA", fields: [case_a_id], references: [id], onDelete: Cascade)
+  case_b   Case  @relation("CaseB", fields: [case_b_id], references: [id], onDelete: Cascade)
+  reviewer User? @relation("Reviewer", fields: [reviewed_by], references: [id])
+
+  @@unique([case_a_id, case_b_id])
+  @@index([case_a_id])
+  @@index([case_b_id])
+  @@index([review_status])
+  @@map("case_relationships")
+}
+
+model CaseEvent {
+  id         String   @id @default(uuid())
+  case_id    String
+  actor_id   String
+  event_type String   // status_change | owner_assigned | transfer | note_added | link_action | system
+  remarks    String
+  created_at DateTime @default(now())
+
+  case  Case @relation(fields: [case_id], references: [id], onDelete: Cascade)
+  actor User @relation(fields: [actor_id], references: [id])
+
+  @@index([case_id])
+  @@map("case_events")
+}
+
+model Alert {
+  id              String    @id @default(uuid())
+  case_id         String
+  rule            String
+  triggered_at    DateTime  @default(now())
+  recipient_id    String
+  delivery_status String    @default("delivered") // sent | pending | delivered
+  resolved_at     DateTime?
+
+  case      Case @relation(fields: [case_id], references: [id], onDelete: Cascade)
+  recipient User @relation(fields: [recipient_id], references: [id])
+
+  @@index([case_id])
+  @@index([recipient_id])
+  @@index([resolved_at])
+  @@map("alerts")
+}
+
+model AuditEvent {
+  id          String   @id @default(uuid())
+  actor_id    String
+  action      String   // e.g. case.create, link.confirm, link.reject, case.transfer, export.csv
+  entity_type String
+  entity_id   String
+  metadata    Json?
+  created_at  DateTime @default(now())
+
+  actor User @relation(fields: [actor_id], references: [id])
+
+  @@index([entity_type, entity_id])
+  @@index([actor_id])
+  @@index([created_at])
+  @@map("audit_events")
+}
+
+model IngestionRun {
+  id              String    @id @default(uuid())
+  source          String
+  started_at      DateTime  @default(now())
+  finished_at     DateTime?
+  status          String    @default("running") // running | completed | failed
+  records_seen    Int       @default(0)
+  records_changed Int       @default(0)
+  errors          Json?
+
+  @@map("ingestion_runs")
+}
